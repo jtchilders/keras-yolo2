@@ -9,8 +9,8 @@ if sys.version_info.major >= 3:
 else:
    import thread as threadmod
 
-from scipy import sparse
-import tensorflow as tf
+# from scipy import sparse
+# import tensorflow as tf
 
 import numpy as np
 # import imgaug as ia
@@ -44,8 +44,10 @@ class BatchGenerator(Sequence):
                shuffle=True,
                jitter=True,
                norm=None,
-               sparse=False):
-      self.generator       = None
+               sparse=False,
+               name='',
+               rank=0,
+               nranks=1):
       self.config          = config
       self.filelist        = filelist
       self.evts_per_file   = evts_per_file
@@ -57,11 +59,24 @@ class BatchGenerator(Sequence):
       self.pix_per_grid_x  = float(self.config['IMAGE_W']) / self.config['GRID_W']
       self.num_grid_y      = config['GRID_H']
       self.pix_per_grid_y  = float(self.config['IMAGE_H']) / self.config['GRID_H']
+      self.name            = name
+      self.rank            = rank
+      self.nranks          = nranks
+      self.num_batches     = int(np.floor(float(self.nevts) / self.config['BATCH_SIZE'] / self.nranks))
 
       self.sparse  = sparse
       self.shuffle = shuffle
       self.jitter  = jitter
       self.norm    = norm
+
+      logger.info('%s: len(filelist)    = %s',self.name,len(self.filelist))
+      logger.info('%s: nevts            = %s',self.name,self.nevts)
+      logger.info('%s: batch_size       = %s',self.name,self.batch_size)
+      logger.info('%s: num_batches      = %s',self.name,self.num_batches)
+      logger.info('%s: evts_per_file    = %s',self.name,self.evts_per_file)
+      logger.info('%s: sparse           = %s',self.name,self.sparse)
+      logger.info('%s: norm             = %s',self.name,self.norm)
+
 
       np.random.seed(threadmod.get_ident() // 2**32)
 
@@ -132,12 +147,15 @@ class BatchGenerator(Sequence):
          np.random.shuffle(self.filelist)
 
     def __len__(self):
-        return int(np.floor(float(self.nevts) / self.config['BATCH_SIZE']))
+        return self.num_batches
 
     def get_num_classes(self):
         return self.num_classes
 
     def size(self):
+        return self.nevts
+
+    def num_images(self):
         return self.nevts
 
     # Convert a list of scipy sparse arrays in csr format to a 3D sparse tensorflow Tensor
@@ -153,6 +171,7 @@ class BatchGenerator(Sequence):
         if self.sparse:
             file_content = np.load(self.filelist[i])
             objs = file_content[2]
+            # logger.debug('load_annotation objs = %s',objs)
         else:
             file_index = int(i / self.evts_per_file)
             image_index = i % self.evts_per_file
@@ -163,12 +182,16 @@ class BatchGenerator(Sequence):
         for obj in objs:
             annot = [obj[BBOX_CENTER_X], obj[BBOX_CENTER_Y], obj[BBOX_WIDTH], obj[BBOX_HEIGHT], np.argmax(obj[5:])]
             annots.append(annot)
+        # logger.debug('load_annotation annots = %s',annots)
         return np.array(annots)
 
     def load_image(self, i):
         if self.sparse:
-            file_content = np.load(self.filelist[i])
-            return self.importSparse2DenseTensor(file_content[0], (self.config['IMAGE_C'],self.config['IMAGE_H'],self.config['IMAGE_W']))
+            if i < len(self.filelist):
+                file_content = np.load(self.filelist[i])
+                return self.importSparse2DenseTensor(file_content[0], (self.config['IMAGE_C'],self.config['IMAGE_H'],self.config['IMAGE_W']))
+            else:
+                raise Exception('%s: tried to read file index %s but filelist is length %s' % (self.name,i,len(self.filelist)))
         else:
             file_index = int(i / self.evts_per_file)
             image_index = i % self.evts_per_file
@@ -178,7 +201,10 @@ class BatchGenerator(Sequence):
     # return a batch of images starting at the given index
     def __getitem__(self, idx):
         start = time.time()
-        logger.debug('starting get batch of size %s',self.batch_size)
+        logger.debug('%s: starting get batch of size %s',self.name,self.batch_size)
+
+        # convert idx to batch index based on rank ID
+        batch_index = self.rank + idx * self.nranks
 
         instance_count = 0
 
@@ -198,22 +224,22 @@ class BatchGenerator(Sequence):
                             self.config['BOX'],
                             4 + 1 + len(self.config['LABELS'])))
 
-        global_image_index = self.batch_size * idx
+        global_image_index = self.batch_size * batch_index
         image_index = global_image_index % self.evts_per_file
         file_index = global_image_index // self.evts_per_file
 
-        logger.debug('[{0}] thread {1} opening file with idx {2} file_index {3} image_index {4}'.format(
-            time.time() - start,threadmod.get_ident(), idx, file_index,image_index))
+        logger.debug('[%s] %s: thread %s opening file with idx %s batch_index %s file_index %s image_index %s',
+            time.time() - start,self.name,threadmod.get_ident(), idx, batch_index, file_index,image_index)
 
         if file_index < len(self.filelist):
             file_content = np.load(self.filelist[file_index])
             if self.sparse:
                 file_index += 1
         else:
-            raise Exception('file_index {0} is outside range for filelist {1}'.format(file_index,len(self.filelist)))
+            raise Exception('[%s] %s: file_index %s is outside range for filelist %s' % (time.time() - start,self.name,file_index,len(self.filelist)))
 
         for i in range(self.config['BATCH_SIZE']):
-            logger.debug('[{0}] loop {1} start'.format(time.time() - start,i))
+            logger.debug('[%s] %s: loop %s start',time.time() - start,self.name,i)
 
             if not self.sparse and image_index >= self.evts_per_file:
                 file_index += 1
@@ -227,7 +253,7 @@ class BatchGenerator(Sequence):
                 x_batch[instance_count] = file_content['raw'][image_index]
                 all_objs = file_content['truth'][image_index]
 
-            logger.debug('[{0}] loop {1} file loaded'.format(time.time() - start,i))
+            logger.debug('[%s] %s: loop %s file loaded',time.time() - start,self.name,i)
 
             # augment input image and fix object's position and size
             # img, all_objs = self.aug_image(img, all_objs, jitter=self.jitter)
@@ -260,12 +286,12 @@ class BatchGenerator(Sequence):
                 b_batch[instance_count, 0, 0, 0, true_box_index] = box
               
                 true_box_index += 1
-                logger.debug('[%s] loop %s b_batch = %s ',time.time() - start,i,b_batch[instance_count])
-                logger.debug('[%s] loop %s y_batch = %s ',time.time() - start,i,y_batch[instance_count][grid_y][grid_x])
-                logger.debug('[%s] loop %s obj     = %s ',time.time() - start,i,obj)
+                logger.debug('[%s] %s: loop %s b_batch = %s ',time.time() - start,self.name,i,b_batch[instance_count])
+                logger.debug('[%s] %s: loop %s y_batch = %s ',time.time() - start,self.name,i,y_batch[instance_count][grid_y][grid_x])
+                logger.debug('[%s] %s: loop %s obj     = %s ',time.time() - start,self.name,i,obj)
                 # true_box_index = true_box_index % self.config['TRUE_BOX_BUFFER']
 
-            logger.debug('[{0}] loop {1} images converted'.format(time.time() - start,i))
+            logger.debug('[%s] %s: loop %s images converted',time.time() - start,self.name,i)
                             
             # assign input image to x_batch
             if self.norm:
@@ -296,11 +322,10 @@ class BatchGenerator(Sequence):
         if self.sparse:
             x_batch = np.stack(x_batch)
 
-        logger.debug('x_batch.shape = %s',x_batch.shape)
-        logger.debug('b_batch.shape = %s',b_batch.shape)
-        logger.debug('y_batch.shape = %s',y_batch.shape)
-        #logger.debug('y_batch = %s',y_batch)
-        logger.debug('[{0}] exiting'.format(time.time() - start))
+        logger.debug('[%s] %s: x_batch.shape = %s',time.time() - start,self.name,x_batch.shape)
+        logger.debug('[%s] %s: b_batch.shape = %s',time.time() - start,self.name,b_batch.shape)
+        logger.debug('[%s] %s: y_batch.shape = %s',time.time() - start,self.name,y_batch.shape)
+        logger.debug('[%s] %s: exiting',time.time() - start,self.name)
 
         return [x_batch, b_batch], y_batch
 

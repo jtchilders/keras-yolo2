@@ -47,28 +47,48 @@ class YOLO(object):
         self.max_box_per_image = config_file['model']['max_box_per_image']
         backend = config_file['model']['backend']
 
-
+        self.rank = 0
+        self.nranks = 1
         if self.args.horovod:
-           logger.debug("importing hvd")
-           import horovod.keras as hvd
-           self.hvd = hvd
-           logger.info('horovod from: %s',hvd.__file__)
-           logger.debug('hvd init')
-           self.hvd.init()
-           logger.info("Rank: %s",self.hvd.rank())
+            logger.debug("importing hvd")
+            import horovod.keras as hvd
+            self.hvd = hvd
+            logger.info('horovod from: %s',hvd.__file__)
+            logger.debug('hvd init')
+            self.hvd.init()
+            logger.info("Rank: %s",self.hvd.rank())
+            self.rank = self.hvd.rank()
+            self.nranks = self.hvd.size()
 
         if self.args.ml_comm:
-           logger.debug("importing ml_comm")
-           import ml_comm as mc
-           from plugin_keras import InitPluginCallback, BroadcastVariablesCallback, DistributedOptimizer
-           self.mc = mc
-           self.InitPluginCallback = InitPluginCallback
-           self.BroadcastVariablesCallback = BroadcastVariablesCallback
-           self.DistributedOptimizer = DistributedOptimizer
-           logger.info('ml_comm from: %s',mc.__file__)
-           logger.debug('mc init')
-           self.mc.init_mpi()
-           logger.info("Rank: %s",self.mc.get_rank())
+            logger.debug("importing ml_comm")
+            import ml_comm as mc
+            from plugin_keras import InitPluginCallback, BroadcastVariablesCallback, DistributedOptimizer
+            self.mc = mc
+            self.InitPluginCallback = InitPluginCallback
+            self.BroadcastVariablesCallback = BroadcastVariablesCallback
+            self.DistributedOptimizer = DistributedOptimizer
+            logger.info('ml_comm from: %s',mc.__file__)
+            logger.debug('mc init')
+            self.mc.init_mpi()
+            logger.info("Rank: %s",self.mc.get_rank())
+            self.rank = self.mc.get_rank()
+            self.nranks = self.mc.get_nranks()
+
+        if self.rank >= 0:
+            logger_format = '%(asctime)s %(levelname)s:' + ('%05d' % self.rank) + ':%(name)s:%(message)s'
+            if self.rank == 0:
+                for h in logging.root.handlers:
+                    logging.root.removeHandler(h)
+                logging.basicConfig(level=logging.DEBUG,
+                    format=logger_format)
+                logger.setLevel(logging.DEBUG)
+            else:
+                for h in logging.root.handlers:
+                    logging.root.removeHandler(h)
+                logging.basicConfig(level=logging.WARNING,
+                    format=logger_format)
+                logger.setLevel(logging.WARNING)
 
         self.sparse = args.sparse
 
@@ -139,7 +159,8 @@ class YOLO(object):
         '''
 
         # print a summary of the whole model
-        self.model.summary()
+        if (self.rank >= 0 and self.rank == 0) or self.rank == -1:
+            self.model.summary()
         logger.debug("done YOLO init")
 
     def custom_loss(self, y_true, y_pred):
@@ -168,8 +189,8 @@ class YOLO(object):
         ### adjust x and y
         pred_box_xy = tf.sigmoid(y_pred[..., :2]) + cell_grid
         
-        ### adjust w and h
-        pred_box_wh = tf.exp(y_pred[..., 2:4]) * np.reshape(self.anchors, [1,1,1,self.nb_box,2])
+        ### adjust w and h (Rui, removed anchor box to avoid forcing shapes to incorrect box)
+        pred_box_wh = tf.exp(y_pred[..., 2:4])  # * np.reshape(self.anchors, [1,1,1,self.nb_box,2])
         
         ### adjust confidence
         pred_box_conf = tf.sigmoid(y_pred[..., 4])
@@ -303,18 +324,18 @@ class YOLO(object):
 
 
 
-            loss = tf.Print(loss, [y_true], message='y_true \t', summarize=1000)
-            loss = tf.Print(loss, [tf.shape(y_true)], message='y_true shape \t', summarize=1000)
-            loss = tf.Print(loss, [y_true[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='y_true value \t', summarize=1000)
-            loss = tf.Print(loss, [indices[0][0],indices[0][1],indices[0][2],indices[0][3]], message='y_true value indices\t', summarize=1000)
-            loss = tf.Print(loss, [y_pred[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='y_pred value \t', summarize=1000)
+            # loss = tf.Print(loss, [y_true], message='y_true \t', summarize=1000)
+            # loss = tf.Print(loss, [tf.shape(y_true)], message='y_true shape \t', summarize=1000)
+            # loss = tf.Print(loss, [y_true[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='y_true value \t', summarize=1000)
+            # loss = tf.Print(loss, [indices[0][0],indices[0][1],indices[0][2],indices[0][3]], message='y_true value indices\t', summarize=1000)
+            # loss = tf.Print(loss, [y_pred[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='y_pred value \t', summarize=1000)
 
-            loss = tf.Print(loss, [true_box_wh[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='true_box_wh \t', summarize=1000)
-            loss = tf.Print(loss, [pred_box_wh[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='pred_box_wh \t', summarize=1000)
+            # loss = tf.Print(loss, [true_box_wh[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='true_box_wh \t', summarize=1000)
+            # loss = tf.Print(loss, [pred_box_wh[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='pred_box_wh \t', summarize=1000)
 
 
-            loss = tf.Print(loss, [true_box_xy[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='true_box_xy \t', summarize=1000)
-            loss = tf.Print(loss, [pred_box_xy[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='pred_box_xy \t', summarize=1000)
+            # loss = tf.Print(loss, [true_box_xy[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='true_box_xy \t', summarize=1000)
+            # loss = tf.Print(loss, [pred_box_xy[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='pred_box_xy \t', summarize=1000)
 
             loss = tf.Print(loss, [loss_xy], message='Loss XY \t', summarize=1000)
             loss = tf.Print(loss, [loss_wh], message='Loss WH \t', summarize=1000)
@@ -372,15 +393,21 @@ class YOLO(object):
                                      generator_config,
                                      evts_per_file,
                                      norm=self.config_file['train']['normalize'],
-                                     sparse=self.sparse)
+                                     sparse=self.sparse,
+                                     name='train',
+                                     rank=self.rank,
+                                     nranks=self.nranks)
         valid_generator = BatchGenerator(valid_imgs,
                                      generator_config,
                                      evts_per_file,
                                      norm=self.config_file['train']['normalize'],
                                      jitter=False,
-                                     sparse=self.sparse)
+                                     sparse=self.sparse,
+                                     name='valid',
+                                     rank=self.rank,
+                                     nranks=self.nranks)
 
-        logger.debug("done batch generators")
+        logger.debug("done batch generators train = %s, valid = %s",len(train_generator),len(valid_generator))
                                      
         self.warmup_batches  = warmup_epochs * (train_times * len(train_generator) + valid_times * len(valid_generator))
 
@@ -389,7 +416,7 @@ class YOLO(object):
         ############################################
 
         logger.debug("create Adam")
-        optimizer = Adam(lr=learning_rate, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.0)
+        optimizer = Adam(lr=learning_rate, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.6)
         if self.args.horovod:
             logger.debug("hvd optimizer")
             optimizer = self.hvd.DistributedOptimizer(optimizer)
@@ -430,7 +457,7 @@ class YOLO(object):
         ############################################
 
         dateString = datetime.datetime.strftime(datetime.datetime.now(),'%Y-%m-%d-%H-%M-%S')
-        log_path = os.path.join(self.config_file['tensorboard']['log_dir'],dateString)
+        log_path = self.config_file['tensorboard']['log_dir'] + '_' + dateString
         
 
         verbose = self.config_file['train']['verbose']
@@ -452,18 +479,18 @@ class YOLO(object):
             tensorboard = TB2(evaluate=self.evaluate,generator=valid_generator,log_every=2,log_dir=log_path,update_freq='batch')
             callbacks.append(tensorboard)
             if self.hvd.rank() == 0:
-               verbose = self.config_file['train']['verbose']
-               os.makedirs(log_path)
+                verbose = self.config_file['train']['verbose']
+                os.makedirs(log_path)
 
-               checkpoint = ModelCheckpoint(self.config_file['model']['model_checkpoint_file'].format(date=dateString),
+                checkpoint = ModelCheckpoint(self.config_file['model']['model_checkpoint_file'].format(date=dateString),
                               monitor='val_loss',
                               verbose=1,
                               save_best_only=True,
                               mode='min',
                               period=1)
-               callbacks.append(checkpoint)
+                callbacks.append(checkpoint)
             else:
-               verbose = 0
+                verbose = 0
         elif self.args.ml_comm:
             logger.debug("cray-plugin callbacks")
             callbacks = []
@@ -474,43 +501,44 @@ class YOLO(object):
             broadcast   = self.BroadcastVariablesCallback(0)
             callbacks.append(broadcast)
 
-            # create tensorboard callback
-            tensorboard = TB2(evaluate=self.evaluate,generator=valid_generator,log_every=10,log_dir=log_path,update_freq='batch')
-            callbacks.append(tensorboard)
 
             if self.mc.get_rank() == 0:
-               verbose = self.config_file['train']['verbose']
-               os.makedirs(log_path)
+                verbose = self.config_file['train']['verbose']
+                os.makedirs(log_path)
 
-               checkpoint = ModelCheckpoint(self.config_file['model']['model_checkpoint_file'].format(date=dateString),
+                # create tensorboard callback
+                tensorboard = TB2(evaluate=self.evaluate,generator=valid_generator,log_every=5,log_dir=log_path,update_freq='batch')
+                callbacks.append(tensorboard)
+
+                checkpoint = ModelCheckpoint(self.config_file['model']['model_checkpoint_file'].format(date=dateString),
                               monitor='val_loss',
                               verbose=1,
                               save_best_only=True,
                               mode='min',
                               period=1)
-               callbacks.append(checkpoint)
+                callbacks.append(checkpoint)
             else:
-               verbose = 0
+                verbose = 0
         else:
-           os.makedirs(log_path)
-           early_stop = EarlyStopping(monitor='val_loss',
+            os.makedirs(log_path)
+            early_stop = EarlyStopping(monitor='val_loss',
                               min_delta=0.001,
                               patience=3,
                               mode='min',
                               verbose=1)
-           checkpoint = ModelCheckpoint(self.config_file['model']['model_checkpoint_file'].format(date=dateString),
+            checkpoint = ModelCheckpoint(self.config_file['model']['model_checkpoint_file'].format(date=dateString),
                                         monitor='val_loss',
                                         verbose=1,
                                         save_best_only=True,
                                         mode='min',
                                         period=1)
-           tensorboard = TB2(evaluate=self.evaluate,generator=valid_generator,log_every=10,log_dir=log_path,update_freq='batch')
+            tensorboard = TB2(evaluate=self.evaluate,generator=valid_generator,log_every=10,log_dir=log_path,update_freq='batch')
 
-           callbacks = [
+            callbacks = [
                early_stop,
                checkpoint,
                tensorboard,
-           ]
+            ]
            
         logger.debug("fit generator")
 
@@ -560,9 +588,11 @@ class YOLO(object):
             A dict mapping class names to mAP scores.
         """
         # gather all detections and annotations
+        logger.debug('running eval')
         all_detections     = [[None for i in range(generator.num_classes)] for j in range(generator.size())]
         all_annotations    = [[None for i in range(generator.num_classes)] for j in range(generator.size())]
-
+        logger.debug('generator name: %s; length: %s',generator.name,len(generator))
+        count_labels = [0 for i in range(generator.num_classes)]
         for i in range(generator.size()):
             raw_image = generator.load_image(i)
             raw_channels, raw_height, raw_width = raw_image.shape
@@ -596,6 +626,7 @@ class YOLO(object):
             # copy detections to all_annotations
             for label in range(generator.num_classes):
                 all_annotations[i][label] = annotations[annotations[:, 4] == label, :4].copy()
+                count_labels[label] += 1
                 
         # compute mAP by comparing all detections and all annotations
         average_precisions = {}
@@ -609,28 +640,29 @@ class YOLO(object):
             for i in range(generator.size()):
                 detections           = all_detections[i][label]
                 annotations          = all_annotations[i][label]
-                num_annotations     += annotations.shape[0]
-                detected_annotations = []
+                if annotations is not None:
+                    num_annotations     += annotations.shape[0]
+                    detected_annotations = []
 
-                for d in detections:
-                    scores = np.append(scores, d[4])
+                    for d in detections:
+                        scores = np.append(scores, d[4])
 
-                    if annotations.shape[0] == 0:
-                        false_positives = np.append(false_positives, 1)
-                        true_positives  = np.append(true_positives, 0)
-                        continue
+                        if annotations.shape[0] == 0:
+                            false_positives = np.append(false_positives, 1)
+                            true_positives  = np.append(true_positives, 0)
+                            continue
 
-                    overlaps            = compute_overlap(np.expand_dims(d, axis=0), annotations)
-                    assigned_annotation = np.argmax(overlaps, axis=1)
-                    max_overlap         = overlaps[0, assigned_annotation]
+                        overlaps            = compute_overlap(np.expand_dims(d, axis=0), annotations)
+                        assigned_annotation = np.argmax(overlaps, axis=1)
+                        max_overlap         = overlaps[0, assigned_annotation]
 
-                    if max_overlap >= iou_threshold and assigned_annotation not in detected_annotations:
-                        false_positives = np.append(false_positives, 0)
-                        true_positives  = np.append(true_positives, 1)
-                        detected_annotations.append(assigned_annotation)
-                    else:
-                        false_positives = np.append(false_positives, 1)
-                        true_positives  = np.append(true_positives, 0)
+                        if max_overlap >= iou_threshold and assigned_annotation not in detected_annotations:
+                            false_positives = np.append(false_positives, 0)
+                            true_positives  = np.append(true_positives, 1)
+                            detected_annotations.append(assigned_annotation)
+                        else:
+                            false_positives = np.append(false_positives, 1)
+                            true_positives  = np.append(true_positives, 0)
 
             # no annotations -> AP for this class is 0 (is this correct?)
             if num_annotations == 0:
@@ -653,6 +685,9 @@ class YOLO(object):
             # compute average precision
             average_precision  = compute_ap(recall, precision)
             average_precisions[label] = average_precision
+
+
+        logger.debug('count_labels = %s',count_labels)
 
         return average_precisions
 

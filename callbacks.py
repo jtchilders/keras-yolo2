@@ -12,15 +12,17 @@ class TB2(callbacks.TensorBoard):
         self.evaluate = evaluate
         self.generator = generator
         self.log_every = log_every
-        logger.info('tensorboard log_dir = %s',log_dir)
+        logger.debug('tensorboard log_dir = %s',log_dir)
 
     def on_batch_end(self,batch,logs=None):
-        print('on_batch_end')
+        logger.debug('in on_batch_end')
         d = {'lr': K.eval(self.model.optimizer.lr)}
+        logger.info('lr = %s',d['lr'])
         if batch % self.log_every == 0:
+            logger.debug('calculating accuracy')
             accuracy = self.evaluate(self.generator)
             logger.info('accuracy = %s',accuracy)
-            d['accuracy':accuracy]
+            d['accuracy'] = sum(d.values())
 
         logs.update(d)
         super(TB2,self).on_batch_end(batch, logs)

@@ -34,6 +34,8 @@ def _main_():
                        help='KMP AFFINITY')
    parser.add_argument('--sparse', action='store_true',
                        help="Indicate that the input data is in sparse format")
+   parser.add_argument('--random-seed', type=int,default=0,dest='random_seed',
+                       help="Set the random number seed. This needs to be the same for all ranks to ensure the batch generator serves data properly.")
    args = parser.parse_args()
 
 
@@ -47,8 +49,10 @@ def _main_():
    filelist = glob.glob(glob_str)
 
    logger.info('config = %s',config)
-   logger.info('train_image_folder =   %s',glob_str)
-   #logger.info('filelist =             %s',filelist)
+   logger.info('train_image_folder  =   %s',glob_str)
+   logger.info('tensorboard log_dir =   %s',args.tb_logdir)
+   logger.info('random-seed         =   %s',args.random_seed)
+   np.random.seed(args.random_seed)
 
 
    ###############################
@@ -66,8 +70,9 @@ def _main_():
                                                  config['valid']['valid_image_folder'],
                                                  config['model']['labels'])
    else:'''
-   train_valid_split = int(0.8 * len(filelist))
+   train_valid_split = int(config['train']['fraction_train'] * len(filelist))
    np.random.shuffle(filelist)
+   logger.info('First file in list  =   %s',filelist[0])
 
    valid_imgs = filelist[train_valid_split:]
    train_imgs = filelist[:train_valid_split]

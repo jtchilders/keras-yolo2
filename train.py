@@ -1,6 +1,6 @@
 #! /usr/bin/env python
 
-import argparse
+import argparse,sys
 import glob,logging
 import numpy as np
 # from preprocessing import parse_annotation
@@ -47,6 +47,8 @@ def _main_():
 
    glob_str = config['train']['train_image_folder']  # + '/*.npz'
    filelist = glob.glob(glob_str)
+   if args.num_files > 0:
+    filelist = filelist[:args.num_files]
 
    logger.info('config = %s',config)
    logger.info('train_image_folder  =   %s',glob_str)
@@ -95,7 +97,11 @@ def _main_():
    yolo.train(train_imgs       = train_imgs,
             valid_imgs         = valid_imgs)
 
+   logger.info('exiting')
+
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG,format='%(asctime)s %(levelname)s:%(name)s:%(message)s')
     _main_()
+    logger.info('exited')
+    sys.exit(0)

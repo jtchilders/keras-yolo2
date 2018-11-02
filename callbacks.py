@@ -17,15 +17,20 @@ class TB2(callbacks.TensorBoard):
     def on_batch_end(self,batch,logs=None):
         logger.debug('in on_batch_end')
         d = {'lr': K.eval(self.model.optimizer.lr)}
-        logger.info('lr = %s',d['lr'])
-        if batch % self.log_every == 0:
-            logger.debug('calculating accuracy')
-            accuracy = self.evaluate(self.generator)
-            logger.info('accuracy = %s',accuracy)
-            d['accuracy'] = sum(d.values())
+        # logger.info('lr = %s',d['lr'])
+        # if batch % self.log_every == 0:
+        #     logger.debug('calculating accuracy')
+        #     accuracy = self.evaluate(self.generator)
+        #     logger.info('accuracy = %s',accuracy)
+        #     d['accuracy'] = sum(d.values())
 
         logs.update(d)
         super(TB2,self).on_batch_end(batch, logs)
+
+    def on_epoch_end(self,epoch,logs):
+        logger.debug('in on_epoch_end')
+        super(TB2,self).on_epoch_end(epoch,logs)
+        logger.debug('exiting on_epoch_end')
 
 
 

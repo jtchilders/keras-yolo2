@@ -1,5 +1,5 @@
 import numpy as np
-import os,logging,datetime
+import os,logging,datetime,time
 
 from keras import backend as keras_backend
 import math
@@ -12,7 +12,7 @@ import tensorflow as tf
 from utils import decode_netout, compute_overlap, compute_ap
 from preprocessing import BatchGenerator
 from backend import TinyYoloFeature, FullYoloFeature, MobileNetFeature, SqueezeNetFeature, Inception3Feature, VGG16Feature, ResNet50Feature
-from backend import FullYoloFeatureNCHW
+from backend import FullYoloFeatureNCHW,FullYoloFeatureNCHW2,FullYoloFeatureNCHW3
 
 from callbacks import TB2
 
@@ -112,6 +112,10 @@ class YOLO(object):
             self.feature_extractor = MobileNetFeature(self.input_shape)
         elif backend == 'Full Yolo NCHW':
             self.feature_extractor = FullYoloFeatureNCHW(self.input_shape)
+        elif backend == 'Full Yolo NCHW2':
+            self.feature_extractor = FullYoloFeatureNCHW2(self.input_shape)
+        elif backend == 'Full Yolo NCHW3':
+            self.feature_extractor = FullYoloFeatureNCHW3(self.input_shape)
         elif backend == 'Full Yolo':
             self.feature_extractor = FullYoloFeature(self.input_shape)
         elif backend == 'Tiny Yolo':
@@ -125,7 +129,8 @@ class YOLO(object):
 
         logger.debug("done building feature extractor")
 
-        self.feature_extractor.feature_extractor.summary()
+        if (self.rank >= 0 and self.rank == 0) or self.rank == -1:
+            self.feature_extractor.feature_extractor.summary()
         self.grid_h, self.grid_w = self.feature_extractor.get_output_shape()
         logger.info('grid h x w = %s x %s',self.grid_h,self.grid_w)
         features = self.feature_extractor.extract(input_image)
@@ -165,11 +170,18 @@ class YOLO(object):
 
     def custom_loss(self, y_true, y_pred):
         mask_shape = tf.shape(y_true)[:4]
+
+        if self.debug and self.rank == 0:
+            zero = tf.constant(0, dtype=tf.float32)
+            where = tf.not_equal(y_true[...,4], zero)
+            indices = tf.where(where)
         
         cell_x = tf.to_float(tf.reshape(tf.tile(tf.range(self.grid_w), [self.grid_h]), (1, self.grid_h, self.grid_w, 1, 1)))
         # tf.Print(cell_x.shape,cell_x)
         cell_y = tf.to_float(tf.reshape(tf.tile(tf.range(self.grid_h), [self.grid_w]), (1, self.grid_w, self.grid_h, 1, 1)))
         cell_y = tf.transpose(cell_y, (0,2,1,3,4))
+
+
 
         # turam - skip concatenation with transpose, as it assumes that we have a square image
         cell_grid = tf.tile(tf.concat([cell_x,cell_y], -1), [self.batch_size, 1, 1, self.nb_box, 1])
@@ -283,11 +295,25 @@ class YOLO(object):
         """
         no_boxes_mask = tf.to_float(coord_mask < self.coord_scale / 2.)
         seen = tf.assign_add(seen, 1.)
+
+        # if self.debug and self.rank == 0:
+
+        #     cell_grid = tf.Print(cell_grid,[cell_grid[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]],message='cell_grid shape = \t', summarize=1000)
+
+        #     true_box_xy = tf.Print(true_box_xy,[tf.shape(true_box_xy)], message='true_box_xy shape = \t', summarize=1000)
+        #     true_box_xy = tf.Print(true_box_xy,[true_box_xy[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='true_box_xy[0] = \t', summarize=1000)
+
+        #     true_box_wh = tf.Print(true_box_wh,[tf.shape(true_box_wh)], message='true_box_wh shape = \t', summarize=1000)
+        #     true_box_wh = tf.Print(true_box_wh,[true_box_wh[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='true_box_wh[0] = \t', summarize=1000)
+
+        #     coord_mask  = tf.Print(coord_mask, [tf.shape(coord_mask)], message='coord_mask shape = \t',  summarize=1000)
+        #     coord_mask  = tf.Print(coord_mask, [coord_mask[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]],  message='coord_mask[0] = \t',  summarize=1000)
+    
         
         true_box_xy, true_box_wh, coord_mask = tf.cond(tf.less(seen, self.warmup_batches + 1),
                               lambda: [true_box_xy + (0.5 + cell_grid) * no_boxes_mask,
                                        true_box_wh + tf.ones_like(true_box_wh) *
-                                       np.reshape(self.anchors, [1,1,1,self.nb_box,2]) *
+                                       # np.reshape(self.anchors, [1,1,1,self.nb_box,2]) *
                                        no_boxes_mask,
                                        tf.ones_like(coord_mask)],
                               lambda: [true_box_xy,
@@ -311,31 +337,35 @@ class YOLO(object):
                       lambda: loss_xy + loss_wh + loss_conf + loss_class + 10,
                       lambda: loss_xy + loss_wh + loss_conf + loss_class)
         
-        if self.debug:
+        if self.debug and self.rank == 0:
             nb_true_box = tf.reduce_sum(y_true[..., 4])
             nb_pred_box = tf.reduce_sum(tf.to_float(true_box_conf > 0.5) * tf.to_float(pred_box_conf > 0.3))
             
             current_recall = nb_pred_box / (nb_true_box + 1e-6)
             total_recall = tf.assign_add(total_recall, current_recall)
 
-            zero = tf.constant(0, dtype=tf.float32)
-            where = tf.not_equal(y_true[...,4], zero)
-            indices = tf.where(where)
+            # zero = tf.constant(0, dtype=tf.float32)
+            # where = tf.not_equal(y_true[...,4], zero)
+            # indices = tf.where(where)
+
+            # loss = tf.Print(nb_coord_box, [nb_coord_box], message='nb_coord_box = \t', summarize=1000)
 
 
 
-            # loss = tf.Print(loss, [y_true], message='y_true \t', summarize=1000)
+            # # loss = tf.Print(loss, [y_true], message='y_true \t', summarize=1000)
             # loss = tf.Print(loss, [tf.shape(y_true)], message='y_true shape \t', summarize=1000)
-            # loss = tf.Print(loss, [y_true[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='y_true value \t', summarize=1000)
-            # loss = tf.Print(loss, [indices[0][0],indices[0][1],indices[0][2],indices[0][3]], message='y_true value indices\t', summarize=1000)
-            # loss = tf.Print(loss, [y_pred[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='y_pred value \t', summarize=1000)
+            loss = tf.Print(loss, [y_true[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='y_true value \t', summarize=1000)
+            
+            # loss = tf.Print(loss, [indices[0]], message='y_true value indices\t', summarize=1000)
+            
+            loss = tf.Print(loss, [y_pred[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='y_pred value \t', summarize=1000)
 
-            # loss = tf.Print(loss, [true_box_wh[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='true_box_wh \t', summarize=1000)
-            # loss = tf.Print(loss, [pred_box_wh[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='pred_box_wh \t', summarize=1000)
+            loss = tf.Print(loss, [true_box_wh[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='true_box_wh \t', summarize=1000)
+            loss = tf.Print(loss, [pred_box_wh[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='pred_box_wh \t', summarize=1000)
 
 
-            # loss = tf.Print(loss, [true_box_xy[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='true_box_xy \t', summarize=1000)
-            # loss = tf.Print(loss, [pred_box_xy[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='pred_box_xy \t', summarize=1000)
+            loss = tf.Print(loss, [true_box_xy[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='true_box_xy \t', summarize=1000)
+            loss = tf.Print(loss, [pred_box_xy[indices[0][0],indices[0][1],indices[0][2],indices[0][3]]], message='pred_box_xy \t', summarize=1000)
 
             loss = tf.Print(loss, [loss_xy], message='Loss XY \t', summarize=1000)
             loss = tf.Print(loss, [loss_wh], message='Loss WH \t', summarize=1000)
@@ -344,6 +374,7 @@ class YOLO(object):
             loss = tf.Print(loss, [loss], message='Total Loss \t', summarize=1000)
             loss = tf.Print(loss, [current_recall], message='Current Recall \t', summarize=1000)
             loss = tf.Print(loss, [total_recall / seen], message='Average Recall \t', summarize=1000)
+            loss = tf.Print(loss, [tf.timestamp()], message='timestamp =  \t', summarize=1000)
         
         return loss
 
@@ -407,6 +438,11 @@ class YOLO(object):
                                      rank=self.rank,
                                      nranks=self.nranks)
 
+
+        if train_generator.num_batches < 1:
+            raise Exception('number of batches is less than the number of ranks so some ranks will have no work to do. %s; %s',train_generator.num_batches,self.nranks)
+
+
         logger.debug("done batch generators train = %s, valid = %s",len(train_generator),len(valid_generator))
                                      
         self.warmup_batches  = warmup_epochs * (train_times * len(train_generator) + valid_times * len(valid_generator))
@@ -416,7 +452,10 @@ class YOLO(object):
         ############################################
 
         logger.debug("create Adam")
-        optimizer = Adam(lr=learning_rate, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.6)
+        optimizer = Adam(lr=learning_rate, beta_1=self.config_file['train']['beta_1'],
+                         beta_2=self.config_file['train']['beta_2'],
+                         epsilon=self.config_file['train']['epsilon'],
+                         decay=self.config_file['train']['decay'])
         if self.args.horovod:
             logger.debug("hvd optimizer")
             optimizer = self.hvd.DistributedOptimizer(optimizer)
@@ -427,19 +466,21 @@ class YOLO(object):
 
         # self.model.compile(loss='mean_squared_error', optimizer=optimizer)
         logger.debug("compile model")
-        self.model.compile(loss=self.custom_loss, optimizer=optimizer)
+        self.model.compile(loss=self.custom_loss,
+                           optimizer=optimizer,
+                           metrics=[self.custom_loss,self.iou,self.classes])
         logger.debug("done compile model")
 
-        # To use Cray Plugin we need to calculate the number of trainable variables 
+        # To use Cray Plugin we need to calculate the number of trainable variables
         # Also useful to adjust number of epochs run
         if self.args.ml_comm:
             trainable_count = int(
               np.sum([keras_backend.count_params(p) for p in set(self.model.trainable_weights)]))
-            non_trainable_count = int(
-              np.sum([keras_backend.count_params(p) for p in set(self.model.non_trainable_weights)]))
+            # non_trainable_count = int(
+            #   np.sum([keras_backend.count_params(p) for p in set(self.model.non_trainable_weights)]))
 
             # Adjust number of Epochs based on number of ranks used
-            nb_epochs = int(nb_epochs / self.mc.get_nranks())
+            # nb_epochs = int(nb_epochs / self.mc.get_nranks())
             if nb_epochs == 0:
               nb_epochs = 1
             total_steps = int(math.ceil((warmup_epochs + nb_epochs) * (
@@ -483,7 +524,7 @@ class YOLO(object):
                 os.makedirs(log_path)
 
                 checkpoint = ModelCheckpoint(self.config_file['model']['model_checkpoint_file'].format(date=dateString),
-                              monitor='val_loss',
+                              monitor='loss',
                               verbose=1,
                               save_best_only=True,
                               mode='min',
@@ -511,7 +552,7 @@ class YOLO(object):
                 callbacks.append(tensorboard)
 
                 checkpoint = ModelCheckpoint(self.config_file['model']['model_checkpoint_file'].format(date=dateString),
-                              monitor='val_loss',
+                              monitor='loss',
                               verbose=1,
                               save_best_only=True,
                               mode='min',
@@ -521,13 +562,13 @@ class YOLO(object):
                 verbose = 0
         else:
             os.makedirs(log_path)
-            early_stop = EarlyStopping(monitor='val_loss',
+            early_stop = EarlyStopping(monitor='loss',
                               min_delta=0.001,
                               patience=3,
                               mode='min',
                               verbose=1)
             checkpoint = ModelCheckpoint(self.config_file['model']['model_checkpoint_file'].format(date=dateString),
-                                        monitor='val_loss',
+                                        monitor='loss',
                                         verbose=1,
                                         save_best_only=True,
                                         mode='min',
@@ -548,7 +589,7 @@ class YOLO(object):
         # Start the training process
         ############################################
 
-        self.model.fit_generator(generator        = train_generator,
+        h = self.model.fit_generator(generator        = train_generator,
                                  steps_per_epoch  = len(train_generator),
                                  epochs           = nb_epochs,
                                  verbose          = verbose,
@@ -558,15 +599,19 @@ class YOLO(object):
                                  workers          = 1,
                                  max_queue_size   = 5)
 
+        import json
+        json.dump(h.history,open('history.json','w'))
+
         ############################################
         # Compute mAP on the validation set
         ############################################
-        average_precisions = self.evaluate(valid_generator)
+        # average_precisions = self.evaluate(valid_generator)
 
         # print evaluation
-        for label, average_precision in average_precisions.items():
-            logger.info(self.labels[label], '{:.4f}'.format(average_precision))
-        logger.info('mAP: {:.4f}'.format(sum(average_precisions.values()) / len(average_precisions)))
+        # logger.info('average_precisions = %s',average_precisions)
+        # for label, average_precision in average_precisions.items():
+        #     logger.info(self.labels[label], '{:.4f}'.format(average_precision))
+        # logger.info('mAP: {:.4f}'.format(sum(average_precisions.values()) / len(average_precisions)))
 
     def evaluate(self,
                  generator,
@@ -589,11 +634,13 @@ class YOLO(object):
         """
         # gather all detections and annotations
         logger.debug('running eval')
+        start = time.time()
         all_detections     = [[None for i in range(generator.num_classes)] for j in range(generator.size())]
         all_annotations    = [[None for i in range(generator.num_classes)] for j in range(generator.size())]
         logger.debug('generator name: %s; length: %s',generator.name,len(generator))
         count_labels = [0 for i in range(generator.num_classes)]
         for i in range(generator.size()):
+            logger.debug('processing image %s',i)
             raw_image = generator.load_image(i)
             raw_channels, raw_height, raw_width = raw_image.shape
 
@@ -626,7 +673,8 @@ class YOLO(object):
             # copy detections to all_annotations
             for label in range(generator.num_classes):
                 all_annotations[i][label] = annotations[annotations[:, 4] == label, :4].copy()
-                count_labels[label] += 1
+                if len(all_annotations[i][label]) > 0:
+                    count_labels[label] += 1
                 
         # compute mAP by comparing all detections and all annotations
         average_precisions = {}
@@ -688,6 +736,7 @@ class YOLO(object):
 
 
         logger.debug('count_labels = %s',count_labels)
+        logger.debug('eval rate: %10.4f',(time.time()-start)/generator.size())
 
         return average_precisions
 
@@ -708,3 +757,127 @@ class YOLO(object):
         boxes  = decode_netout(netout, self.anchors, self.nb_class)
 
         return boxes
+
+    def calc_iou(self,y_true,new_y_pred):
+
+        ### adjust x and y
+        true_box_xy = y_true[..., 0:2]  # relative position to the containing cell
+        pred_box_xy = new_y_pred[...,0:2]
+        
+        ### adjust w and h
+        true_box_wh = y_true[..., 2:4]  # number of cells accross, horizontally and vertically
+        pred_box_wh = new_y_pred[..., 2:4]  # number of cells accross, horizontally and vertically
+
+        ### adjust confidence
+        true_wh_half = true_box_wh / 2.
+        true_mins    = true_box_xy - true_wh_half
+        true_maxes   = true_box_xy + true_wh_half
+        
+        pred_wh_half = pred_box_wh / 2.
+        pred_mins    = pred_box_xy - pred_wh_half
+        pred_maxes   = pred_box_xy + pred_wh_half
+        
+        intersect_mins  = tf.maximum(pred_mins,  true_mins)
+        intersect_maxes = tf.minimum(pred_maxes, true_maxes)
+        intersect_wh    = tf.maximum(intersect_maxes - intersect_mins, 0.)
+        intersect_areas = intersect_wh[..., 0] * intersect_wh[..., 1]
+        
+        true_areas = true_box_wh[..., 0] * true_box_wh[..., 1]
+        pred_areas = pred_box_wh[..., 0] * pred_box_wh[..., 1]
+
+        union_areas = pred_areas + true_areas - intersect_areas
+        iou_scores  = tf.truediv(intersect_areas, union_areas)
+
+        return iou_scores
+
+    def iou(self,y_true,y_pred):
+
+        # convert prediction to truth system
+        new_y_pred = self.convert_prediction(y_pred)
+
+        # get IOU for all boxes
+        iou_scores = self.calc_iou(y_true,new_y_pred)
+
+        # only keep IOU for boxes with real objects
+        iou_scores = iou_scores*y_true[...,4]
+
+        return iou_scores
+
+    def classes(self,y_true,y_pred):
+        
+        true_classes = tf.argmax(y_true[..., 5:], -1)
+        pred_classes = tf.argmax(y_pred[..., 5:], -1) * tf.to_int64(tf.expand_dims(y_true[...,4],axis=-1) > 0.999)
+
+        return tf.to_float(true_classes == pred_classes)
+
+
+
+    def convert_prediction(self,y_pred):
+        # model predicts X & Y in values from 0 to 1
+        # convert to grix_x + pred_x and grid_y + pred_y
+        
+        cell_x = tf.to_float(tf.reshape(tf.tile(tf.range(self.grid_w), [self.grid_h]), (1, self.grid_h, self.grid_w, 1, 1)))
+        cell_y = tf.to_float(tf.reshape(tf.tile(tf.range(self.grid_h), [self.grid_w]), (1, self.grid_w, self.grid_h, 1, 1)))
+        cell_y = tf.transpose(cell_y, (0,2,1,3,4))
+        cell_grid = tf.tile(tf.concat([cell_x,cell_y], -1), [self.batch_size, 1, 1, self.nb_box, 1])
+        
+        xy = tf.sigmoid(y_pred[..., :2]) + cell_grid
+        wh = tf.exp(y_pred[..., 2:4])
+        C = tf.sigmoid(y_pred[..., 4])
+        classes = y_pred[..., 5:]
+
+        new_y_pred = tf.concat([xy,wh,tf.expand_dims(C,axis=-1),classes],axis=-1)
+
+        return new_y_pred
+
+
+
+
+    def eval(self,y_true,y_pred):
+        
+        # convert prediction to truth system
+        new_y_pred = self.convert_prediction(y_pred)
+
+
+        iou_scores = self.calc_iou(y_true,new_y_pred)
+        
+        true_box_conf = iou_scores * y_true[..., 4]
+        
+        ### adjust class probabilities
+        true_box_class = tf.argmax(y_true[..., 5:], -1)
+    
+
+
+def get_IOU(y_true,y_pred):
+
+    # true box
+    true_halfwidth = y_true[...,2] / 2.
+    true_halfheight = y_true[...,3] / 2.
+    true_x1 = y_true[...,0] - true_halfwidth
+    true_y1 = y_true[...,1] - true_halfheight
+    true_x2 = y_true[...,0] + true_halfwidth
+    true_y2 = y_true[...,1] + true_halfheight
+
+    # pred box
+    pred_halfwidth = y_pred[...,2] / 2.
+    pred_halfheight = y_pred[...,3] / 2.
+    pred_x1 = y_pred[...,0] - pred_halfwidth
+    pred_y1 = y_pred[...,1] - pred_halfheight
+    pred_x2 = y_pred[...,0] + pred_halfwidth
+    pred_y2 = y_pred[...,1] + pred_halfheight
+
+
+    xA = tf.maximum(pred_x1,true_x1)
+    yA = tf.maximum(pred_y1,true_y1)
+    xB = tf.minimum(pred_x2,true_x2)
+    yB = tf.minimum(pred_y2,true_y2)
+
+    intersect = (tf.maximum(xB - xA,tf.zeros(tf.shape(xB))) *
+            tf.maximum(yB - yA,tf.zeros(tf.shape(yB))))
+
+    trueArea = y_true[...,2] * y_true[...,3]
+    predArea = y_pred[...,2] * y_pred[...,3]
+
+    union = trueArea + predArea - intersect
+
+    return tf.div(intersect,union)

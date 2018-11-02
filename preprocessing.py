@@ -48,50 +48,57 @@ class BatchGenerator(Sequence):
                name='',
                rank=0,
                nranks=1):
-      self.config          = config
-      self.filelist        = filelist
-      self.evts_per_file   = evts_per_file
-      self.batch_size      = self.config['BATCH_SIZE']
-      self.nevts           = len(filelist) * self.evts_per_file
-      # self.nbatches        = int(self.nevts * (1. / self.batch_size))
-      self.num_classes     = len(config['LABELS'])
-      self.num_grid_x      = config['GRID_W']
-      self.pix_per_grid_x  = float(self.config['IMAGE_W']) / self.config['GRID_W']
-      self.num_grid_y      = config['GRID_H']
-      self.pix_per_grid_y  = float(self.config['IMAGE_H']) / self.config['GRID_H']
-      self.name            = name
-      self.rank            = rank
-      self.nranks          = nranks
-      self.num_batches     = int(np.floor(float(self.nevts) / self.config['BATCH_SIZE'] / self.nranks))
+        self.config          = config
+        self.filelist        = filelist
+        self.evts_per_file   = evts_per_file
+        self.batch_size      = self.config['BATCH_SIZE']
+        self.nevts           = len(filelist) * self.evts_per_file
+        # self.nbatches        = int(self.nevts * (1. / self.batch_size))
+        self.num_classes     = len(config['LABELS'])
+        self.img_c           = config['IMAGE_C']
+        self.img_w           = config['IMAGE_W']
+        self.grid_w          = config['GRID_W']
+        self.img_h           = config['IMAGE_H']
+        self.pix_per_grid_x  = int(self.img_w / self.grid_w) + 1
+        self.grid_h          = config['GRID_H']
+        self.pix_per_grid_y  = int(self.img_h / self.grid_h) + 1
+        self.name            = name
+        self.rank            = rank
+        self.nranks          = nranks
+        self.num_batches     = int(np.floor(float(self.nevts) / self.batch_size / self.nranks))
 
-      self.sparse  = sparse
-      self.shuffle = shuffle
-      self.jitter  = jitter
-      self.norm    = norm
+        self.sparse  = sparse
+        self.shuffle = shuffle
+        self.jitter  = jitter
+        self.norm    = norm
 
-      logger.info('%s: len(filelist)    = %s',self.name,len(self.filelist))
-      logger.info('%s: nevts            = %s',self.name,self.nevts)
-      logger.info('%s: batch_size       = %s',self.name,self.batch_size)
-      logger.info('%s: num_batches      = %s',self.name,self.num_batches)
-      logger.info('%s: evts_per_file    = %s',self.name,self.evts_per_file)
-      logger.info('%s: sparse           = %s',self.name,self.sparse)
-      logger.info('%s: norm             = %s',self.name,self.norm)
+        logger.info('%s: len(filelist)    = %s',self.name,len(self.filelist))
+        logger.info('%s: nevts            = %s',self.name,self.nevts)
+        logger.info('%s: batch_size       = %s',self.name,self.batch_size)
+        logger.info('%s: num_batches      = %s',self.name,self.num_batches)
+        logger.info('%s: evts_per_file    = %s',self.name,self.evts_per_file)
+        logger.info('%s: sparse           = %s',self.name,self.sparse)
+        logger.info('%s: norm             = %s',self.name,self.norm)
+        logger.info('%s: grid_w           = %s',self.name,self.grid_w)
+        logger.info('%s: grid_h           = %s',self.name,self.grid_h)
+        logger.info('%s: pix_per_grid_x   = %s',self.name,self.pix_per_grid_x)
+        logger.info('%s: pix_per_grid_y   = %s',self.name,self.pix_per_grid_y)
 
 
-      np.random.seed(threadmod.get_ident() // 2**32)
+        np.random.seed(threadmod.get_ident() // 2**32)
 
-      self.anchors = [BoundBox(0, 0, config['ANCHORS'][2 * i], config['ANCHORS'][2 * i + 1]) for i in range(int(len(config['ANCHORS']) // 2))]
+        self.anchors = [BoundBox(0, 0, config['ANCHORS'][2 * i], config['ANCHORS'][2 * i + 1]) for i in range(int(len(config['ANCHORS']) // 2))]
 
 
-      '''
-      ### augmentors by https://github.com/aleju/imgaug
-      sometimes = lambda aug: iaa.Sometimes(0.5, aug)
+        '''
+        ### augmentors by https://github.com/aleju/imgaug
+        sometimes = lambda aug: iaa.Sometimes(0.5, aug)
 
-      # Define our sequence of augmentation steps that will be applied to every image
-      # All augmenters with per_channel=0.5 will sample one value _per image_
-      # in 50% of all cases. In all other cases they will sample new values
-      # _per channel_.
-      self.aug_pipe = iaa.Sequential(
+        # Define our sequence of augmentation steps that will be applied to every image
+        # All augmenters with per_channel=0.5 will sample one value _per image_
+        # in 50% of all cases. In all other cases they will sample new values
+        # _per channel_.
+        self.aug_pipe = iaa.Sequential(
           [
               # apply the following augmenters to most images
               #iaa.Fliplr(0.5), # horizontally flip 50% of all images
@@ -140,11 +147,13 @@ class BatchGenerator(Sequence):
               )
           ],
           random_order=True
-      )
-      '''
+        )
+        '''
 
-      if shuffle:
-         np.random.shuffle(self.filelist)
+        # self.batches_processed = []
+
+        if shuffle:
+            np.random.shuffle(self.filelist)
 
     def __len__(self):
         return self.num_batches
@@ -189,7 +198,7 @@ class BatchGenerator(Sequence):
         if self.sparse:
             if i < len(self.filelist):
                 file_content = np.load(self.filelist[i])
-                return self.importSparse2DenseTensor(file_content[0], (self.config['IMAGE_C'],self.config['IMAGE_H'],self.config['IMAGE_W']))
+                return self.importSparse2DenseTensor(file_content[0], (self.img_c,self.img_h,self.img_w))
             else:
                 raise Exception('%s: tried to read file index %s but filelist is length %s' % (self.name,i,len(self.filelist)))
         else:
@@ -202,6 +211,7 @@ class BatchGenerator(Sequence):
     def __getitem__(self, idx):
         start = time.time()
         logger.debug('%s: starting get batch of size %s',self.name,self.batch_size)
+        # self.batches_processed.append(idx)
 
         # convert idx to batch index based on rank ID
         batch_index = self.rank + idx * self.nranks
@@ -209,7 +219,7 @@ class BatchGenerator(Sequence):
         instance_count = 0
 
         # Initialize x_batch based on data input format. Represents the input images
-        img_shape = (self.config['IMAGE_C'], self.config['IMAGE_H'], self.config['IMAGE_W'])
+        img_shape = (self.img_c,self.img_h,self.img_w)
         if self.sparse:
             x_batch = []
         else:
@@ -219,8 +229,8 @@ class BatchGenerator(Sequence):
         b_batch = np.zeros((self.batch_size, 1, 1, 1, self.config['TRUE_BOX_BUFFER'], 4))           # turam - removed space for anchor boxes
         # y_batch = np.zeros((r_bound - l_bound, self.config['GRID_H'],  self.config['GRID_W'], self.config['BOX'], 4+1+len(self.config['LABELS'])))         # desired network output
         y_batch = np.zeros((self.batch_size,
-                            self.config['GRID_H'],
-                            self.config['GRID_W'],
+                            self.grid_h,
+                            self.grid_w,
                             self.config['BOX'],
                             4 + 1 + len(self.config['LABELS'])))
 
@@ -228,17 +238,17 @@ class BatchGenerator(Sequence):
         image_index = global_image_index % self.evts_per_file
         file_index = global_image_index // self.evts_per_file
 
-        logger.debug('[%s] %s: thread %s opening file with idx %s batch_index %s file_index %s image_index %s',
-            time.time() - start,self.name,threadmod.get_ident(), idx, batch_index, file_index,image_index)
+        logger.debug('%s: thread %s opening file with idx %s batch_index %s file_index %s image_index %s',
+            self.name,threadmod.get_ident(), idx, batch_index, file_index,image_index)
 
         if file_index < len(self.filelist):
             file_content = np.load(self.filelist[file_index])
             if self.sparse:
                 file_index += 1
         else:
-            raise Exception('[%s] %s: file_index %s is outside range for filelist %s' % (time.time() - start,self.name,file_index,len(self.filelist)))
+            raise Exception('%s: file_index %s is outside range for filelist %s' % (self.name,file_index,len(self.filelist)))
 
-        for i in range(self.config['BATCH_SIZE']):
+        for i in range(self.batch_size):
             logger.debug('[%s] %s: loop %s start',time.time() - start,self.name,i)
 
             if not self.sparse and image_index >= self.evts_per_file:
@@ -253,7 +263,7 @@ class BatchGenerator(Sequence):
                 x_batch[instance_count] = file_content['raw'][image_index]
                 all_objs = file_content['truth'][image_index]
 
-            logger.debug('[%s] %s: loop %s file loaded',time.time() - start,self.name,i)
+            logger.debug('%s: loop %s file loaded',self.name,i)
 
             # augment input image and fix object's position and size
             # img, all_objs = self.aug_image(img, all_objs, jitter=self.jitter)
@@ -262,37 +272,47 @@ class BatchGenerator(Sequence):
             true_box_index = 0
             
             for obj in all_objs:
-                center_x = obj[BBOX_CENTER_X]
-                center_x = center_x / self.pix_per_grid_x
-                center_y = obj[BBOX_CENTER_Y]
-                center_y = center_y / self.pix_per_grid_y
+                try:
+                    center_x = obj[BBOX_CENTER_X]
+                    center_x = center_x / self.pix_per_grid_x
+                    center_y = obj[BBOX_CENTER_Y]
+                    center_y = center_y / self.pix_per_grid_y
 
-                grid_x = int(center_x)
-                grid_y = int(center_y)
+                    grid_x = int(center_x)
+                    grid_y = int(center_y)
 
-                center_w = (obj[BBOX_WIDTH]) / self.pix_per_grid_x  # unit: grid cell
-                center_h = (obj[BBOX_HEIGHT]) / self.pix_per_grid_y  # unit: grid cell
-              
-                box = [center_x, center_y, center_w, center_h]
+                    center_w = (obj[BBOX_WIDTH]) / self.pix_per_grid_x  # unit: grid cell
+                    center_h = (obj[BBOX_HEIGHT]) / self.pix_per_grid_y  # unit: grid cell
+                  
+                    box = [center_x, center_y, center_w, center_h]
 
-                # turam - note: removed anchor box handling
+                    # turam - note: removed anchor box handling
 
-                # assign ground truth x, y, w, h, confidence and class probs to y_batch
-                y_batch[instance_count, grid_y, grid_x, 0, 0:4] = box
-                y_batch[instance_count, grid_y, grid_x, 0, 4] = 1.
-                y_batch[instance_count, grid_y, grid_x, 0, 5:5 + self.num_classes] = obj[5:5 + self.num_classes]
-              
-                # assign the true box to b_batch
-                b_batch[instance_count, 0, 0, 0, true_box_index] = box
-              
-                true_box_index += 1
-                logger.debug('[%s] %s: loop %s b_batch = %s ',time.time() - start,self.name,i,b_batch[instance_count])
-                logger.debug('[%s] %s: loop %s y_batch = %s ',time.time() - start,self.name,i,y_batch[instance_count][grid_y][grid_x])
-                logger.debug('[%s] %s: loop %s obj     = %s ',time.time() - start,self.name,i,obj)
-                # true_box_index = true_box_index % self.config['TRUE_BOX_BUFFER']
+                    # assign ground truth x, y, w, h, confidence and class probs to y_batch
+                    y_batch[instance_count, grid_y, grid_x, 0, 0:4] = box
+                    y_batch[instance_count, grid_y, grid_x, 0, 4] = 1.
+                    y_batch[instance_count, grid_y, grid_x, 0, 5:5 + self.num_classes] = obj[5:5 + self.num_classes]
+                  
+                    # assign the true box to b_batch
+                    b_batch[instance_count, 0, 0, 0, true_box_index] = box
+                  
+                    true_box_index += 1
+                    logger.debug('%s: loop %s b_batch = %s ',self.name,i,b_batch[instance_count])
+                    logger.debug('%s: loop %s y_batch = %s ',self.name,i,y_batch[instance_count][grid_y][grid_x])
+                    logger.debug('%s: loop %s obj     = %s ',self.name,i,obj)
+                    # true_box_index = true_box_index % self.config['TRUE_BOX_BUFFER']
+                except Exception:
+                    if self.sparse:
+                        logger.exception('%s: recieved exception while processing truth object %s from file[%s] %s',
+                            self.name,obj,file_index-1,self.filelist[file_index-1])
+                        raise
+                    else:
+                        logger.exception('%s: recieved exception while processing truth object %s from file %s',
+                            self.name,obj,file_content.fid.name)
+                        raise
 
-            logger.debug('[%s] %s: loop %s images converted',time.time() - start,self.name,i)
-                            
+            logger.debug('%s: loop %s images converted',self.name,i)
+            
             # assign input image to x_batch
             if self.norm:
                 x_batch[instance_count] = x_batch[instance_count] / np.amax(x_batch[instance_count])
@@ -322,16 +342,21 @@ class BatchGenerator(Sequence):
         if self.sparse:
             x_batch = np.stack(x_batch)
 
-        logger.debug('[%s] %s: x_batch.shape = %s',time.time() - start,self.name,x_batch.shape)
-        logger.debug('[%s] %s: b_batch.shape = %s',time.time() - start,self.name,b_batch.shape)
-        logger.debug('[%s] %s: y_batch.shape = %s',time.time() - start,self.name,y_batch.shape)
-        logger.debug('[%s] %s: exiting',time.time() - start,self.name)
+        end = time.time()
+        average_read_time = (end - start) / self.batch_size
+
+        logger.debug('%s: x_batch.shape = %s',self.name,x_batch.shape)
+        logger.debug('%s: b_batch.shape = %s',self.name,b_batch.shape)
+        logger.debug('%s: y_batch.shape = %s',self.name,y_batch.shape)
+        logger.debug('%s: exiting after reading seconds per image: %10.4f',self.name,average_read_time)
 
         return [x_batch, b_batch], y_batch
 
     def on_epoch_end(self):
         if self.shuffle:
             np.random.shuffle(self.filelist)
+        # logger.warning('%s: batches processed(%s): %s',self.name,len(self.batches_processed),self.batches_processed)
+        # self.batches_processed = []
 
     """
     def aug_image(self, image, all_objs, jitter):
@@ -419,3 +444,58 @@ def grid_to_global(grid_bin_x, grid_bin_y,grid_x,grid_y,grid_w,grid_h,num_grid_x
       global_sizes[i]   = grid_sizes[i] * grid_bin_size
 
    return global_coords,global_sizes
+
+
+def main():
+    import argparse,json,glob
+    logging.basicConfig(level=logging.INFO)
+
+    parser = argparse.ArgumentParser(description='Atlas Training')
+    parser.add_argument('--config_file', '-c',
+                        help='configuration in standard json format.',required=True)
+    parser.add_argument('--sparse', action='store_true',
+                       help="Indicate that the input data is in sparse format")
+    args = parser.parse_args()
+
+    config = json.load(open(args.config_file))
+
+    glob_str = config['train']['train_image_folder']  # + '/*.npz'
+    filelist = glob.glob(glob_str)
+
+    generator_config = {
+        'IMAGE_C': config['model']['input_shape'][0],
+        'IMAGE_H': config['model']['input_shape'][1],
+        'IMAGE_W': config['model']['input_shape'][2],
+        'GRID_H': 8,
+        'GRID_W': 180,
+        'BOX': 1,
+        'LABELS': config['model']['labels'],
+        'CLASS': len(config['model']['labels']),
+        'ANCHORS': config['model']['anchors'],
+        'BATCH_SIZE': config['train']['batch_size'],
+        'TRUE_BOX_BUFFER': config['model']['max_box_per_image'],
+    }
+
+
+    gen = BatchGenerator(filelist,generator_config,
+                         config['train']['evts_per_file'],
+                         sparse=args.sparse)
+
+
+    length = len(gen)
+    one_percent = int(0.001*length)
+    for i in range(length):
+        if i % one_percent == 0:
+            logger.info('on %s of %s',i,length)
+        gen[i]
+
+
+
+
+
+
+if __name__ == '__main__':
+    main()
+
+
+
